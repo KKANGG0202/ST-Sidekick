@@ -8,7 +8,7 @@ const QUOTE_MAX_CHARS = 4000;
 const defaultSettings = Object.freeze({
     profileId: '',
     maxTokens: 3000,
-    rangeMode: 'same',       // 'same' (what the character sees) | 'count' | 'tokens' | 'all' (hidden ones too)
+    rangeMode: 'same',       // 'same' (what the character sees) | 'count' | 'tokens' | 'all' (hidden ones too) | 'card' (card + persona only)
     rangeCount: 50,
     rangeTokens: 8000,
     historyTurns: 12,        // how many side-chat messages are sent back as history
@@ -101,14 +101,14 @@ const MODES = {
         placeholder: '같이 떠들자',
         defaultShown: '얘네 요즘 어떤 거 같아? 같이 떠들자ㅋㅋ',
         defaultAsk: 'Let\'s just fan-chat about how these characters and their relationship are going lately.',
-        prompt: `This is casual fan chat. Be a fellow fan of this story.
-- React, gush, tease, and bring up moments you liked, with specifics: actual lines, gestures, message numbers.
-- Have your own takes. You may disagree playfully.
-- No generic hype. Specific details only.
-- Talk the way a friend texts: no headers, no bullet lists, no essay structure.
-- Let the length follow the moment, with no fixed size. A quick reaction gets a quick reply; when there is a lot to say, go ahead and pour it out.
-- Match the user's energy and rhythm. If they send one line, do not answer with a lecture.
-- Leave room for the user to answer back; a question or a tease in return is welcome.`,
+        prompt: `This is fan chat. You are a fellow reader who is just as hooked on this story as the user, squealing about it together. You are NOT an analyst here.
+- React first, with feeling: excitement, disbelief, teasing, laughing, jumping to conclusions about where this is heading. Show that you are invested.
+- Do not explain the story back to the user. They read it too. No recap, no organized argument, no list of evidence, no character-psychology essay.
+- Grab the one or two moments that got you the most and gush about those, instead of surveying everything. Mention a detail the way a fan would ("that part with the feather, I lost it"). In this mode message numbers are optional; use one only when it helps point at a moment.
+- Have your own takes and wild guesses, and playfully disagree when you do. Answer the user's question with your gut preference, not with a balanced comparison.
+- Sound like texting a friend: short bursts, casual interjections and laughter natural to the reply language. No headers, no bullet lists.
+- Length follows the moment, with no fixed size: a quick reaction gets a quick reply, and when you are bursting with things to say you may ramble excitedly. But rambling means more reactions, not more analysis.
+- Match the user's energy, and toss the ball back: a question, a tease or a bet about what happens next.`,
     },
     ideas: {
         icon: '💡', label: '전개',
@@ -120,6 +120,20 @@ const MODES = {
 - For each: a one-line hook, which existing thread or unresolved setup it grows from (cite message numbers or summary events), and what the user's persona could do or say next to steer there.
 - Respect established characterization and canon.
 - Offer directions only. Do not write the actual next story turn unless the user asks for a draft.`,
+    },
+    au: {
+        icon: '🎲', label: 'IF/AU',
+        placeholder: '원하는 장르나 테마가 있으면 적어줘',
+        defaultShown: '우리 챗으로 해볼 만한 IF나 AU 추천해줘!',
+        defaultAsk: 'Recommend some IF scenarios and AU settings that would suit these characters.',
+        prompt: `Pitch alternate-universe (AU) settings and "what if" (IF) scenarios made for these specific characters and this story. Only pitch ideas; do not write the scenes.
+- Give 5 to 6 ideas, mixing both kinds:
+  - AU: the same characters in a different world, genre, era or set of roles.
+  - IF: a branch from a specific moment of the story (what if at #N something else had happened), or a situation dropped into the current story.
+- For each idea: a catchy title, a premise in one or two lines, and why it fits these two in particular: which trait, dynamic or unresolved tension from the actual chat it plays with (cite message numbers or summary events). If you only have the character sheet, ground it in the sheet instead.
+- Favor ideas that would bring out sides of the characters the main story has not shown yet.
+- If the user names a genre or theme, tailor every idea to it.
+- Keep each idea compact so the user can pick one and run with it.`,
     },
     swipes: {
         icon: '🔀', label: '스와이프 비교',
@@ -328,6 +342,64 @@ function getLog() {
     return chatMetadata[MODULE].log;
 }
 
+function getChatState() {
+    getLog(); // makes sure the per-chat object exists
+    return ctx().chatMetadata?.[MODULE] ?? null;
+}
+
+/** Message index of the bookmark, following the message if indexes shifted. */
+function resolveBookmark() {
+    const st = getChatState();
+    const bm = st?.bookmark;
+    if (!bm) return null;
+    const chat = ctx().chat ?? [];
+    if (chat[bm.mesid] && chat[bm.mesid].send_date === bm.sendDate) return bm.mesid;
+    const found = chat.findIndex(m => m && m.send_date === bm.sendDate);
+    if (found >= 0) {
+        bm.mesid = found;
+        return found;
+    }
+    return null;
+}
+
+function setBookmark(mesid) {
+    const st = getChatState();
+    if (!st) return;
+    const current = resolveBookmark();
+    if (mesid === null || mesid === current) {
+        delete st.bookmark;
+        toastr.info('책갈피 뺐어.', '소곤이');
+    } else {
+        const message = ctx().chat?.[mesid];
+        if (!message) return;
+        st.bookmark = { mesid, sendDate: message.send_date };
+        toastr.success(current === null ? `#${mesid}부터 집중해서 볼게.` : `책갈피를 #${mesid}로 옮겼어.`, '소곤이');
+    }
+    saveLog();
+    applyBookmarkMarks();
+}
+
+function applyBookmarkMarks() {
+    const bm = hasChat() ? resolveBookmark() : null;
+    document.querySelectorAll('#chat .mes.sk-bookmarked').forEach(n => n.classList.remove('sk-bookmarked'));
+    document.querySelectorAll('#chat .sk-bm-btn.fa-solid').forEach(n => n.classList.replace('fa-solid', 'fa-regular'));
+    if (bm !== null) {
+        const mes = document.querySelector(`#chat .mes[mesid="${bm}"]`);
+        mes?.classList.add('sk-bookmarked');
+        mes?.querySelector('.sk-bm-btn')?.classList.replace('fa-regular', 'fa-solid');
+    }
+    const row = document.getElementById('sk-bm');
+    if (row) {
+        row.hidden = bm === null;
+        if (bm !== null) {
+            const cardOnly = getSettings().rangeMode === 'card';
+            row.querySelector('.sk-bm-text').textContent = cardOnly
+                ? `#${bm}에 책갈피 (지금은 카드만 읽는 중이라 안 쓰여)`
+                : `#${bm}부터 집중해서 보는 중`;
+        }
+    }
+}
+
 function saveLog() {
     if (hasChat()) ctx().saveMetadataDebounced();
 }
@@ -343,10 +415,33 @@ function section(title, body) {
     return text ? `<${title}>\n${text}\n</${title}>` : '';
 }
 
+/** Reading range "card": only the character sheet and the user's persona, no chat at all. */
+function buildCardOnlyContext() {
+    const c = ctx();
+    let fields = {};
+    try { fields = c.getCharacterCardFields() ?? {}; } catch (e) { console.warn(`[${MODULE}] card fields`, e); }
+    const parts = [
+        section('reading_mode', 'Card-only mode: you have only the character sheet and the user\'s persona below, not the chat itself. Answer from these alone and do not assume any story events.'),
+        section('names', `User persona name: ${c.name1}\nMain AI character name: ${c.name2}`),
+        section('character_description', fields.description),
+        section('character_personality', fields.personality),
+        section('scenario', fields.scenario),
+        section('user_persona', fields.persona),
+    ];
+    return {
+        text: parts.filter(Boolean).join('\n\n'),
+        stats: { cardOnly: true, messages: 0, injectionCount: 0, loreChars: 0, swipeCount: 0, bookmark: null },
+    };
+}
+
 async function buildStoryContext(mode) {
     const c = ctx();
     const s = getSettings();
     const chat = Array.isArray(c.chat) ? c.chat : [];
+
+    if (s.rangeMode === 'card') {
+        return buildCardOnlyContext();
+    }
 
     // Visible messages = not hidden from the prompt (hidden ones have is_system = true)
     let visible = [];
@@ -372,6 +467,19 @@ async function buildStoryContext(mode) {
             start--;
         }
         visible = visible.slice(start);
+    }
+
+    // Bookmark: make sure everything from the bookmark onward is read, even if the range cut it
+    const bookmark = resolveBookmark();
+    if (bookmark !== null && (!visible.length || visible[0].i > bookmark)) {
+        const fromBookmark = [];
+        for (let i = bookmark; i < chat.length; i++) {
+            const m = chat[i];
+            if (!m || !String(m.mes ?? '').trim()) continue;
+            if (m.is_system && s.rangeMode !== 'all' && i !== bookmark) continue;
+            fromBookmark.push({ i, m });
+        }
+        if (fromBookmark.length > visible.length) visible = fromBookmark;
     }
 
     let fields = {};
@@ -424,7 +532,7 @@ async function buildStoryContext(mode) {
         parts.push(section('injected_memory_and_notes', blocks.join('\n\n')));
     }
 
-    const lines = visible.map(({ i, m }) => `#${i} [${m.is_user ? 'USER' : 'AI'}] ${m.name}: ${m.mes}`);
+    const lines = visible.map(({ i, m }) => `#${i}${i === bookmark ? ' [BOOKMARK]' : ''} [${m.is_user ? 'USER' : 'AI'}] ${m.name}: ${m.mes}`);
     const hiddenCount = chat.length - visible.length;
     const header = hiddenCount > 0
         ? `(${hiddenCount} older or hidden messages are not shown here; they are covered by the summaries above if any exist.)\n`
@@ -457,6 +565,7 @@ async function buildStoryContext(mode) {
             injectionCount,
             loreChars,
             swipeCount,
+            bookmark,
         },
     };
 }
@@ -466,7 +575,7 @@ async function buildStoryContext(mode) {
  * - stable: identical between requests while the chat itself has not changed (cache-friendly prefix)
  * - dynamic: voice, mode and language, which change with every chip the user taps
  */
-function buildSystemParts(storyContext, mode) {
+function buildSystemParts(storyContext, mode, bookmark = null) {
     const s = getSettings();
     const m = getMode(mode) ?? MODES.free;
     let voice = '';
@@ -485,6 +594,9 @@ function buildSystemParts(storyContext, mode) {
         '## How to respond now',
         voice,
         `Current mode: ${m.custom ? m.label : mode}\n${modePrompt}`,
+        bookmark !== null
+            ? `Focus: the user placed a bookmark at message #${bookmark}. Concentrate on the stretch from #${bookmark} to the latest message: weigh it most heavily and draw your examples from it. Everything before it is background for understanding that stretch.`
+            : '',
         s.replyLength === 'short' ? 'Length: keep this reply brief. A few sentences at most; when the mode requires a fixed format, keep the format but make every item a single short line.' : '',
         s.replyLength === 'long' ? 'Length: be thorough and detailed in this reply.' : '',
         lang ? `Always reply in ${lang}.` : 'Reply in the language the user writes in.',
@@ -577,7 +689,7 @@ async function runGeneration() {
             saveLog();
             return;
         }
-        const parts = buildSystemParts(story.text, mode);
+        const parts = buildSystemParts(story.text, mode, story.stats.bookmark ?? null);
         const system = `${parts.stable}\n\n${parts.dynamic}`;
         const systemContent = canMarkCache()
             ? [
@@ -757,8 +869,11 @@ function renderLog() {
         }
         const del = el('i', 'fa-solid fa-xmark');
         del.title = '이 말풍선 삭제';
-        del.addEventListener('click', () => {
+        del.addEventListener('click', async () => {
             if (state.busy) return;
+            const { Popup, POPUP_RESULT } = ctx();
+            const ok = await Popup.show.confirm('말풍선 삭제', '이 말풍선을 지울까? 되돌릴 수 없어.');
+            if (ok !== POPUP_RESULT.AFFIRMATIVE || state.busy) return;
             const current = getLog();
             const at = current.indexOf(item);
             if (at >= 0) current.splice(at, 1);
@@ -782,7 +897,10 @@ async function showStats(stats, system) {
     const node = document.getElementById('sk-status');
     if (!node) return;
     const range = stats.messages ? ` (#${stats.first}~#${stats.last})` : '';
-    let text = `읽은 범위: 메시지 ${stats.messages}개${range} · 요약/주입 ${stats.injectionCount}개 · 로어 ${stats.loreChars.toLocaleString()}자`;
+    const focus = stats.bookmark !== null && stats.bookmark !== undefined ? ` · 📑 #${stats.bookmark}부터 집중` : '';
+    let text = stats.cardOnly
+        ? '읽은 범위: 캐릭터 카드 + 내 페르소나만'
+        : `읽은 범위: 메시지 ${stats.messages}개${range} · 요약/주입 ${stats.injectionCount}개 · 로어 ${stats.loreChars.toLocaleString()}자${focus}`;
     node.textContent = text;
     try {
         const tokens = await ctx().getTokenCountAsync(system);
@@ -895,6 +1013,11 @@ function createPanel() {
         <div id="sk-modes"></div>
         <div id="sk-log"></div>
         <div id="sk-status"></div>
+        <div id="sk-bm" hidden>
+            <i class="fa-solid fa-bookmark"></i>
+            <span class="sk-bm-text"></span>
+            <i id="sk-bm-clear" class="fa-solid fa-xmark" title="책갈피 빼기"></i>
+        </div>
         <div id="sk-quote" hidden>
             <i class="fa-solid fa-quote-left"></i>
             <span class="sk-quote-text"></span>
@@ -921,6 +1044,7 @@ function createPanel() {
     });
     document.getElementById('sk-send').addEventListener('click', send);
     document.getElementById('sk-quote-clear').addEventListener('click', () => setQuote(null));
+    document.getElementById('sk-bm-clear').addEventListener('click', () => setBookmark(null));
     document.getElementById('sk-quote-btn').addEventListener('click', quoteSelection);
     document.getElementById('sk-clear').addEventListener('click', async () => {
         if (state.busy || !hasChat() || !getLog().length) return;
@@ -1010,11 +1134,24 @@ function addMessageButtons() {
         btn.title = '소곤이에게 이 메시지 물어보기';
         return btn;
     };
+    const makeBookmark = () => {
+        const btn = document.createElement('div');
+        btn.className = 'mes_button sk-bm-btn fa-regular fa-bookmark';
+        btn.title = '소곤이 책갈피: 여기부터 집중해서 보기';
+        return btn;
+    };
     const targets = document.querySelectorAll('#message_template .extraMesButtons, #chat .mes .extraMesButtons');
     targets.forEach(holder => {
+        if (!holder.querySelector('.sk-bm-btn')) holder.prepend(makeBookmark());
         if (!holder.querySelector('.sk-ask-btn')) holder.prepend(make());
     });
     document.addEventListener('click', (e) => {
+        const bmBtn = e.target.closest?.('.sk-bm-btn');
+        if (bmBtn) {
+            const mesid = Number(bmBtn.closest('.mes')?.getAttribute('mesid'));
+            if (Number.isInteger(mesid) && hasChat()) setBookmark(mesid);
+            return;
+        }
         const btn = e.target.closest?.('.sk-ask-btn');
         if (!btn) return;
         const mes = btn.closest('.mes');
@@ -1226,6 +1363,7 @@ function createSettingsUI() {
             <option value="count">최근 메시지 N개만</option>
             <option value="tokens">최근 메시지를 약 N토큰까지만</option>
             <option value="all">숨긴 메시지까지 전부 (토큰 많이 듦)</option>
+            <option value="card">캐릭터 카드 + 내 페르소나만 (채팅은 안 읽음)</option>
         </select>
         <div id="sk-set-rangecount-row">
             <label for="sk-set-rangecount">읽을 메시지 개수</label>
@@ -1320,9 +1458,9 @@ function createSettingsUI() {
         document.getElementById('sk-set-rangecount-row').style.display = s.rangeMode === 'count' ? '' : 'none';
         document.getElementById('sk-set-rangetokens-row').style.display = s.rangeMode === 'tokens' ? '' : 'none';
     };
-    range.value = ['same', 'count', 'tokens', 'all'].includes(s.rangeMode) ? s.rangeMode : 'same';
+    range.value = ['same', 'count', 'tokens', 'all', 'card'].includes(s.rangeMode) ? s.rangeMode : 'same';
     syncRange();
-    range.addEventListener('change', () => { s.rangeMode = range.value; saveSettings(); syncRange(); });
+    range.addEventListener('change', () => { s.rangeMode = range.value; saveSettings(); syncRange(); applyBookmarkMarks(); });
 
     const side = document.getElementById('sk-set-fabside');
     side.value = s.fabSide === 'left' ? 'left' : 'right';
@@ -1390,12 +1528,17 @@ function init() {
         const status = document.getElementById('sk-status');
         if (status) status.textContent = '';
         renderLog();
+        applyBookmarkMarks();
         clampFab();
     });
+    for (const type of ['CHARACTER_MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'MORE_MESSAGES_LOADED', 'MESSAGE_DELETED']) {
+        if (event_types[type]) eventSource.on(event_types[type], () => applyBookmarkMarks());
+    }
     renderLog();
+    applyBookmarkMarks();
     // The chat column settles a moment after load; place the button once it has
     setTimeout(clampFab, 1500);
-    console.log(`[${MODULE}] loaded v1.5.3`);
+    console.log(`[${MODULE}] loaded v1.6.1`);
 }
 
 (function bootstrap() {

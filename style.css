@@ -263,6 +263,7 @@
     border-left: 3px solid var(--SmartThemeQuoteColor, #e0a060);
 }
 
+#sk-bm[hidden],
 #sk-quote[hidden] {
     display: none;
 }
@@ -605,4 +606,41 @@ img.sk-mascot {
     background: color-mix(in srgb, var(--SmartThemeBodyColor, #888) 10%, transparent);
     font-size: 0.9em;
 }
-/* build 1.5.1 */
+
+
+/* Bookmark */
+#sk-bm {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 10px 0;
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 0.85em;
+    background: color-mix(in srgb, #ff6b81 14%, transparent);
+    border-left: 3px solid #ff6b81;
+}
+
+#sk-bm .fa-bookmark {
+    color: #ff6b81;
+}
+
+.sk-bm-text {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#sk-bm-clear {
+    cursor: pointer;
+    padding: 4px;
+}
+
+#chat .mes.sk-bookmarked {
+    box-shadow: inset 3px 0 0 #ff6b81;
+}
+
+#chat .mes .sk-bm-btn.fa-solid {
+    color: #ff6b81;
+}
+/* build 1.6.0 */
