@@ -19,7 +19,8 @@ const defaultSettings = Object.freeze({
     rxCriteria: '',          // the user's own checklist for the prescription mode
     customModes: [],         // [{ id, label, prompt, ask }] written by the user
     hiddenModes: [],         // keys of chips the user turned off
-    showStats: true,         // briefly show what was read after each request
+    showStats: true,
+    replySound: false,       // play a soft chime when Sogoni's reply arrives         // briefly show what was read after each request
     useCache: true,          // mark the story context as cacheable (Sogoni requests only)
     persona: 'friend',
     customPersona: '',
@@ -654,6 +655,56 @@ function buildTurns(log, mode) {
 }
 
 // ---------------------------------------------------------------------------
+// Reply chime: synthesized, so it needs no sound file and differs from SillyTavern's own ding
+// ---------------------------------------------------------------------------
+
+let audioCtx = null;
+
+/** Must run inside a click so phones allow sound later. */
+function unlockAudio() {
+    if (!getSettings().replySound) return;
+    try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        audioCtx = audioCtx ?? new Ctx();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (e) { console.warn(`[${MODULE}] audio`, e); }
+}
+
+/** Two soft rising bell notes, like a little whisper "ti-ring". */
+function playChime(force = false) {
+    if (!force && !getSettings().replySound) return;
+    try {
+        unlockAudio();
+        if (!audioCtx) return;
+        const now = audioCtx.currentTime + 0.02;
+        const notes = [[1046.5, 0], [1568, 0.11]]; // C6 then G6
+        for (const [freq, delay] of notes) {
+            const osc = audioCtx.createOscillator();
+            const shimmer = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            shimmer.type = 'triangle';
+            osc.frequency.value = freq;
+            shimmer.frequency.value = freq * 2;
+            const start = now + delay;
+            gain.gain.setValueAtTime(0.0001, start);
+            gain.gain.exponentialRampToValueAtTime(0.16, start + 0.012);
+            gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.55);
+            const shimmerGain = audioCtx.createGain();
+            shimmerGain.gain.value = 0.18;
+            osc.connect(gain);
+            shimmer.connect(shimmerGain).connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(start);
+            shimmer.start(start);
+            osc.stop(start + 0.6);
+            shimmer.stop(start + 0.6);
+        }
+    } catch (e) { console.warn(`[${MODULE}] chime`, e); }
+}
+
+// ---------------------------------------------------------------------------
 // Generation
 // ---------------------------------------------------------------------------
 
@@ -690,6 +741,7 @@ async function runGeneration() {
     const mode = last.mode || 'free';
     const chatId = c.getCurrentChatId();
     const runId = ++state.runId;
+    unlockAudio();
 
     setBusy(true);
     try {
@@ -721,6 +773,7 @@ async function runGeneration() {
         if (!reply) throw new Error('빈 응답이 왔어. 최대 토큰이나 연결 프로필을 확인해줘.');
         log.push({ role: 'assistant', content: reply, mode, ts: Date.now() });
         saveLog();
+        playChime();
     } catch (e) {
         if (runId !== state.runId) return;
         console.error(`[${MODULE}] generation failed`, e);
@@ -1435,6 +1488,10 @@ function createSettingsUI() {
         </div>
         <label class="checkbox_label"><input id="sk-set-injections" type="checkbox" /><span>요약 확장 등 다른 확장이 주입하는 내용 읽기</span></label>
         <label class="checkbox_label"><input id="sk-set-lore" type="checkbox" /><span>활성화된 로어북 읽기</span></label>
+        <div class="sk-sound-row">
+            <label class="checkbox_label"><input id="sk-set-sound" type="checkbox" /><span>소곤이 답장이 오면 띠링 소리</span></label>
+            <button type="button" id="sk-set-sound-test" class="menu_button">미리 듣기</button>
+        </div>
         <label class="checkbox_label"><input id="sk-set-stats" type="checkbox" /><span>보낼 때마다 읽은 범위와 토큰을 잠깐 표시 (8초 뒤 사라짐)</span></label>
         <label class="checkbox_label"><input id="sk-set-cache" type="checkbox" /><span>프롬프트 캐싱 표시 붙이기 (소곤이 요청에만)</span></label>
         <small>연결 프로필이 OpenRouter의 Claude/Gemini일 때만 붙어. 그 외 모델은 켜도 달라지는 게 없어. 롤플 요청은 안 건드려.</small>
@@ -1500,6 +1557,8 @@ function createSettingsUI() {
     bindCheck('sk-set-injections', 'includeInjections');
     bindCheck('sk-set-lore', 'includeLore');
     bindCheck('sk-set-cache', 'useCache');
+    bindCheck('sk-set-sound', 'replySound', () => unlockAudio());
+    document.getElementById('sk-set-sound-test').addEventListener('click', () => playChime(true));
     bindCheck('sk-set-stats', 'showStats', () => { const n = document.getElementById('sk-status'); if (n) n.textContent = ''; });
     bindCheck('sk-set-fab', 'showFab', applyFabVisibility);
     bindCheck('sk-set-inputicon', 'showInputIcon', applyInputIconVisibility);
@@ -1618,7 +1677,7 @@ function init() {
     applyBookmarkMarks();
     // The chat column settles a moment after load; place the button once it has
     setTimeout(clampFab, 1500);
-    console.log(`[${MODULE}] loaded v1.8.0`);
+    console.log(`[${MODULE}] loaded v1.9.0`);
 }
 
 (function bootstrap() {

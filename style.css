@@ -673,3 +673,16 @@ img.sk-mascot {
 #sk-set-fastmodes label {
     margin-top: 2px;
 }
+
+.sk-sound-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.sk-sound-row .menu_button {
+    width: auto;
+    margin: 0;
+}
