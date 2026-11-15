@@ -7,7 +7,7 @@ const QUOTE_MAX_CHARS = 4000;
 
 const defaultSettings = Object.freeze({
     profileId: '',
-    maxTokens: 3000,
+    maxTokens: 8192,         // thinking models spend part of this on reasoning before they write
     rangeMode: 'same',       // 'same' (what the character sees) | 'count' | 'tokens' | 'all' (hidden ones too) | 'card' (card + persona only)
     rangeCount: 50,
     rangeTokens: 8000,
@@ -17,10 +17,12 @@ const defaultSettings = Object.freeze({
     rxCriteria: '',          // the user's own checklist for the prescription mode
     customModes: [],         // [{ id, label, prompt, ask }] written by the user
     hiddenModes: [],         // keys of chips the user turned off
+    showStats: true,         // briefly show what was read after each request
     useCache: true,          // mark the story context as cacheable (Sogoni requests only)
     persona: 'friend',
     customPersona: '',
     replyLang: 'Korean',
+    lastMode: 'free',        // chip that was selected last, restored on load
     replyLength: 'auto',     // 'auto' (each mode decides) | 'short' | 'long'
     showFab: false,          // default: open from the wand menu only
     showInputIcon: false,
@@ -40,6 +42,8 @@ You are NOT a participant in that story. Never continue the roleplay, never writ
 
 Below you receive exactly what the character AI currently holds in memory: the character sheet, the user's persona, active lore, injected memory (summaries of older events and other notes), and the currently visible chat messages, numbered like #123.
 Older parts of the story exist only as summaries. Treat summaries as true canon.
+
+The user is the author and reader of this story, not the persona they write. Treat the user's persona as one more fictional character: refer to the persona by name in the third person, exactly as you do with the AI-played characters. Never address the user as if they were the persona, and never attribute the persona's feelings, choices or relationships to the user personally.
 
 Rules:
 - Ground every claim in the provided material. When you infer instead of read, make that clear.
@@ -108,7 +112,8 @@ const MODES = {
 - Have your own takes and wild guesses, and playfully disagree when you do. Answer the user's question with your gut preference, not with a balanced comparison.
 - Sound like texting a friend: short bursts, casual interjections and laughter natural to the reply language. No headers, no bullet lists.
 - Length follows the moment, with no fixed size: a quick reaction gets a quick reply, and when you are bursting with things to say you may ramble excitedly. But rambling means more reactions, not more analysis.
-- Match the user's energy, and toss the ball back: a question, a tease or a bet about what happens next.`,
+- Match the user's energy.
+- Do not end with a question or a prompt for the user to respond. No "what do you think?", no forced follow-up. Just say your piece and stop where it naturally ends. Ask something only on the rare occasion you are honestly curious about the user's take.`,
     },
     ideas: {
         icon: '💡', label: '전개',
@@ -120,20 +125,6 @@ const MODES = {
 - For each: a one-line hook, which existing thread or unresolved setup it grows from (cite message numbers or summary events), and what the user's persona could do or say next to steer there.
 - Respect established characterization and canon.
 - Offer directions only. Do not write the actual next story turn unless the user asks for a draft.`,
-    },
-    au: {
-        icon: '🎲', label: 'IF/AU',
-        placeholder: '원하는 장르나 테마가 있으면 적어줘',
-        defaultShown: '우리 챗으로 해볼 만한 IF나 AU 추천해줘!',
-        defaultAsk: 'Recommend some IF scenarios and AU settings that would suit these characters.',
-        prompt: `Pitch alternate-universe (AU) settings and "what if" (IF) scenarios made for these specific characters and this story. Only pitch ideas; do not write the scenes.
-- Give 5 to 6 ideas, mixing both kinds:
-  - AU: the same characters in a different world, genre, era or set of roles.
-  - IF: a branch from a specific moment of the story (what if at #N something else had happened), or a situation dropped into the current story.
-- For each idea: a catchy title, a premise in one or two lines, and why it fits these two in particular: which trait, dynamic or unresolved tension from the actual chat it plays with (cite message numbers or summary events). If you only have the character sheet, ground it in the sheet instead.
-- Favor ideas that would bring out sides of the characters the main story has not shown yet.
-- If the user names a genre or theme, tailor every idea to it.
-- Keep each idea compact so the user can pick one and run with it.`,
     },
     swipes: {
         icon: '🔀', label: '스와이프 비교',
@@ -600,6 +591,7 @@ function buildSystemParts(storyContext, mode, bookmark = null) {
         s.replyLength === 'short' ? 'Length: keep this reply brief. A few sentences at most; when the mode requires a fixed format, keep the format but make every item a single short line.' : '',
         s.replyLength === 'long' ? 'Length: be thorough and detailed in this reply.' : '',
         lang ? `Always reply in ${lang}.` : 'Reply in the language the user writes in.',
+        mode === 'rx' ? 'Exception to the reply language: every paste-ready instruction inside a code block must be written in English, because it will be given to the roleplay AI. Only the symptom and diagnosis explanations use the reply language.' : '',
     ].filter(Boolean).join('\n\n');
     return { stable, dynamic };
 }
@@ -629,12 +621,18 @@ function toApiText(item) {
 }
 
 /** Turn the side-chat log into alternating user/assistant messages ending with the latest user turn. */
-function buildTurns(log) {
+function buildTurns(log, mode) {
     const s = getSettings();
+    // The critic judges independently: it gets only the current request, none of the side chat
+    if (mode === 'critic') {
+        const last = log[log.length - 1];
+        return last ? [{ role: 'user', content: toApiText(last) }] : [];
+    }
+    // The newest request always goes out, even if older bubbles around it are hidden
     const recent = log.slice(-Math.max(1, Number(s.historyTurns) + 1));
     const turns = [];
     for (const item of recent) {
-        if (item.error) continue;
+        if (item.error || item.hidden) continue;
         const role = item.role === 'assistant' ? 'assistant' : 'user';
         const text = toApiText(item);
         if (!text.trim()) continue;
@@ -657,18 +655,22 @@ async function requestCompletion(messages) {
         state.usingMainApi = false;
         state.abort = new AbortController();
         const res = await c.ConnectionManagerRequestService.sendRequest(
-            s.profileId, messages, Number(s.maxTokens) || 3000,
+            s.profileId, messages, Number(s.maxTokens) || 8192,
             { stream: false, signal: state.abort.signal, extractData: true, includePreset: true, includeInstruct: true },
         );
         return typeof res === 'string' ? res : String(res?.content ?? '');
     }
     state.usingMainApi = true;
-    return await c.generateRaw({ prompt: messages, responseLength: Number(s.maxTokens) || 3000, trimNames: false });
+    return await c.generateRaw({ prompt: messages, responseLength: Number(s.maxTokens) || 8192, trimNames: false });
 }
 
 function errorText(e) {
     const cause = e?.cause?.message || e?.cause;
-    return [e?.message, cause].filter(Boolean).join(': ') || String(e);
+    const text = [e?.message, cause].filter(Boolean).join(': ') || String(e);
+    if (/candidate text empty|빈 응답/i.test(text)) {
+        return `${text}\n\n모델이 생각(추론)하는 데 토큰을 다 써서 답을 못 쓴 걸 수 있어. 톱니바퀴 > 모델 > "최대 응답 토큰"을 더 올리고 다시 보내봐. (지금 ${getSettings().maxTokens})`;
+    }
+    return text;
 }
 
 async function runGeneration() {
@@ -697,7 +699,7 @@ async function runGeneration() {
                 { type: 'text', text: parts.dynamic },
             ]
             : system;
-        const messages = [{ role: 'system', content: systemContent }, ...buildTurns(log)];
+        const messages = [{ role: 'system', content: systemContent }, ...buildTurns(log, mode)];
         showStats(story.stats, system);
 
         const reply = (await requestCompletion(messages) ?? '').trim();
@@ -825,7 +827,7 @@ function renderLog() {
     log.forEach((item, index) => {
         if (state.pinsOnly && !item.pinned) return;
         const isUser = item.role === 'user';
-        const wrap = el('div', `sk-msg ${isUser ? 'sk-user' : 'sk-ai'}${item.error ? ' sk-error' : ''}${item.pinned ? ' sk-pinned' : ''}`);
+        const wrap = el('div', `sk-msg ${isUser ? 'sk-user' : 'sk-ai'}${item.error ? ' sk-error' : ''}${item.pinned ? ' sk-pinned' : ''}${item.hidden ? ' sk-hidden-msg' : ''}`);
 
         const badgeMode = isUser && item.mode && item.mode !== 'free' ? getMode(item.mode) : null;
         if (badgeMode) {
@@ -861,6 +863,17 @@ function renderLog() {
             });
             tools.append(pin);
         }
+        if (!item.error) {
+            const eye = el('i', `fa-solid ${item.hidden ? 'fa-eye-slash sk-on' : 'fa-eye'}`);
+            eye.title = item.hidden ? '소곤이한테 다시 보이기' : '소곤이한테 숨기기 (지우진 않음)';
+            eye.addEventListener('click', () => {
+                if (state.busy) return;
+                item.hidden = !item.hidden;
+                saveLog();
+                renderLog();
+            });
+            tools.append(eye);
+        }
         if (!isUser && index === log.length - 1 && !state.pinsOnly) {
             const redo = el('i', 'fa-solid fa-rotate');
             redo.title = '다시 생성';
@@ -893,9 +906,13 @@ function renderLog() {
     box.scrollTop = box.scrollHeight;
 }
 
+let statsTimer = null;
+
 async function showStats(stats, system) {
     const node = document.getElementById('sk-status');
-    if (!node) return;
+    if (!node || !getSettings().showStats) return;
+    clearTimeout(statsTimer);
+    statsTimer = setTimeout(() => { node.textContent = ''; }, 8000);
     const range = stats.messages ? ` (#${stats.first}~#${stats.last})` : '';
     const focus = stats.bookmark !== null && stats.bookmark !== undefined ? ` · 📑 #${stats.bookmark}부터 집중` : '';
     let text = stats.cardOnly
@@ -931,6 +948,11 @@ function setQuote(quote) {
 
 function setMode(mode) {
     state.mode = getMode(mode) ? mode : 'free';
+    const saved = getSettings();
+    if (saved.lastMode !== state.mode) {
+        saved.lastMode = state.mode;
+        saveSettings();
+    }
     document.querySelectorAll('#sk-modes .sk-chip').forEach(chip => {
         chip.classList.toggle('sk-active', chip.dataset.mode === state.mode);
     });
@@ -1238,8 +1260,7 @@ function addInputIcon() {
     if (!holder || document.getElementById('sk-inputbtn')) return;
     const btn = document.createElement('div');
     btn.id = 'sk-inputbtn';
-    btn.className = 'interactable';
-    btn.innerHTML = mascotSvg(24);
+    btn.className = 'fa-solid fa-comments interactable';
     btn.title = '소곤이 열기/닫기';
     btn.tabIndex = 0;
     btn.addEventListener('click', () => togglePanel());
@@ -1353,7 +1374,7 @@ function createSettingsUI() {
         <h4>모델</h4>
         <label for="sk-set-profile">연결 프로필 (비우면 현재 메인 API 사용)</label>
         <select id="sk-set-profile" class="text_pole"></select>
-        <label for="sk-set-maxtokens">최대 응답 토큰</label>
+        <label for="sk-set-maxtokens">최대 응답 토큰 (생각하는 모델은 추론 토큰도 여기서 나가)</label>
         <input id="sk-set-maxtokens" class="text_pole" type="number" min="200" max="32000" step="100" />
 
         <h4>읽는 범위</h4>
@@ -1375,6 +1396,7 @@ function createSettingsUI() {
         </div>
         <label class="checkbox_label"><input id="sk-set-injections" type="checkbox" /><span>요약 확장 등 다른 확장이 주입하는 내용 읽기</span></label>
         <label class="checkbox_label"><input id="sk-set-lore" type="checkbox" /><span>활성화된 로어북 읽기</span></label>
+        <label class="checkbox_label"><input id="sk-set-stats" type="checkbox" /><span>보낼 때마다 읽은 범위와 토큰을 잠깐 표시 (8초 뒤 사라짐)</span></label>
         <label class="checkbox_label"><input id="sk-set-cache" type="checkbox" /><span>프롬프트 캐싱 표시 붙이기 (소곤이 요청에만)</span></label>
         <small>연결 프로필이 OpenRouter의 Claude/Gemini일 때만 붙어. 그 외 모델은 켜도 달라지는 게 없어. 롤플 요청은 안 건드려.</small>
         <label for="sk-set-history">소곤이와의 대화 기억 개수 (최근 말풍선 몇 개까지)</label>
@@ -1439,6 +1461,7 @@ function createSettingsUI() {
     bindCheck('sk-set-injections', 'includeInjections');
     bindCheck('sk-set-lore', 'includeLore');
     bindCheck('sk-set-cache', 'useCache');
+    bindCheck('sk-set-stats', 'showStats', () => { const n = document.getElementById('sk-status'); if (n) n.textContent = ''; });
     bindCheck('sk-set-fab', 'showFab', applyFabVisibility);
     bindCheck('sk-set-inputicon', 'showInputIcon', applyInputIconVisibility);
 
@@ -1507,12 +1530,19 @@ function createSettingsUI() {
 function init() {
     const { eventSource, event_types } = ctx();
     const settings = getSettings();
-    if (settings.layoutVersion !== 2) {
+    if (settings.layoutVersion < 2) {
         // The default spot of the floating button changed; drop positions saved by older builds
         settings.fabPos = null;
         settings.layoutVersion = 2;
         saveSettings();
     }
+    if (settings.layoutVersion < 3) {
+        // 3000 was too small for thinking models: reasoning could use it all up and leave no answer
+        if (Number(settings.maxTokens) <= 3000) settings.maxTokens = 8192;
+        settings.layoutVersion = 3;
+        saveSettings();
+    }
+    state.mode = settings.lastMode || 'free';
     createPanel();
     createFab();
     addWandMenuEntry();
@@ -1538,7 +1568,7 @@ function init() {
     applyBookmarkMarks();
     // The chat column settles a moment after load; place the button once it has
     setTimeout(clampFab, 1500);
-    console.log(`[${MODULE}] loaded v1.6.1`);
+    console.log(`[${MODULE}] loaded v1.7.2`);
 }
 
 (function bootstrap() {

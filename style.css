@@ -643,4 +643,23 @@ img.sk-mascot {
 #chat .mes .sk-bm-btn.fa-solid {
     color: #ff6b81;
 }
-/* build 1.6.0 */
+
+
+/* Bubbles hidden from Sogoni */
+.sk-msg.sk-hidden-msg {
+    opacity: 0.45;
+    border-style: dashed;
+}
+
+.sk-msg.sk-hidden-msg .sk-tools {
+    opacity: 1;
+}
+
+#sk-status {
+    transition: opacity 0.3s;
+}
+/* build 1.7.0 */
+
+.sk-error .sk-body {
+    white-space: pre-wrap;
+}
