@@ -20,7 +20,8 @@ const defaultSettings = Object.freeze({
     customModes: [],         // [{ id, label, prompt, ask }] written by the user
     hiddenModes: [],         // keys of chips the user turned off
     showStats: true,
-    replySound: false,       // play a soft chime when Sogoni's reply arrives         // briefly show what was read after each request
+    replySound: false,       // play a soft chime when Sogoni's reply arrives
+    replySoundWhen: 'away',  // 'away' (panel closed, or another tab/app in front) | 'always'         // briefly show what was read after each request
     useCache: true,          // mark the story context as cacheable (Sogoni requests only)
     persona: 'friend',
     customPersona: '',
@@ -673,7 +674,13 @@ function unlockAudio() {
 
 /** Two soft rising bell notes, like a little whisper "ti-ring". */
 function playChime(force = false) {
-    if (!force && !getSettings().replySound) return;
+    const s = getSettings();
+    if (!force) {
+        if (!s.replySound) return;
+        const panelOpen = !document.getElementById('sk-panel')?.classList.contains('sk-hidden');
+        const looking = panelOpen && document.visibilityState === 'visible';
+        if (s.replySoundWhen !== 'always' && looking) return;
+    }
     try {
         unlockAudio();
         if (!audioCtx) return;
@@ -1492,6 +1499,10 @@ function createSettingsUI() {
             <label class="checkbox_label"><input id="sk-set-sound" type="checkbox" /><span>소곤이 답장이 오면 띠링 소리</span></label>
             <button type="button" id="sk-set-sound-test" class="menu_button">미리 듣기</button>
         </div>
+        <select id="sk-set-soundwhen" class="text_pole">
+            <option value="away">패널을 안 보고 있을 때만 (닫혀 있거나 다른 탭·앱)</option>
+            <option value="always">항상</option>
+        </select>
         <label class="checkbox_label"><input id="sk-set-stats" type="checkbox" /><span>보낼 때마다 읽은 범위와 토큰을 잠깐 표시 (8초 뒤 사라짐)</span></label>
         <label class="checkbox_label"><input id="sk-set-cache" type="checkbox" /><span>프롬프트 캐싱 표시 붙이기 (소곤이 요청에만)</span></label>
         <small>연결 프로필이 OpenRouter의 Claude/Gemini일 때만 붙어. 그 외 모델은 켜도 달라지는 게 없어. 롤플 요청은 안 건드려.</small>
@@ -1559,6 +1570,9 @@ function createSettingsUI() {
     bindCheck('sk-set-cache', 'useCache');
     bindCheck('sk-set-sound', 'replySound', () => unlockAudio());
     document.getElementById('sk-set-sound-test').addEventListener('click', () => playChime(true));
+    const soundWhen = document.getElementById('sk-set-soundwhen');
+    soundWhen.value = s.replySoundWhen === 'always' ? 'always' : 'away';
+    soundWhen.addEventListener('change', () => { s.replySoundWhen = soundWhen.value; saveSettings(); });
     bindCheck('sk-set-stats', 'showStats', () => { const n = document.getElementById('sk-status'); if (n) n.textContent = ''; });
     bindCheck('sk-set-fab', 'showFab', applyFabVisibility);
     bindCheck('sk-set-inputicon', 'showInputIcon', applyInputIconVisibility);
@@ -1677,7 +1691,7 @@ function init() {
     applyBookmarkMarks();
     // The chat column settles a moment after load; place the button once it has
     setTimeout(clampFab, 1500);
-    console.log(`[${MODULE}] loaded v1.9.0`);
+    console.log(`[${MODULE}] loaded v1.9.1`);
 }
 
 (function bootstrap() {
