@@ -20,7 +20,7 @@ const defaultSettings = Object.freeze({
     customModes: [],         // [{ id, label, prompt, ask }] written by the user
     hiddenModes: [],         // keys of chips the user turned off
     showStats: true,
-    replySound: false,       // play a soft chime when Sogoni's reply arrives
+    replySound: true,        // play a soft chime when Sogoni's reply arrives
     replySoundWhen: 'away',  // 'away' (panel closed, or another tab/app in front) | 'always'         // briefly show what was read after each request
     useCache: true,          // mark the story context as cacheable (Sogoni requests only)
     persona: 'friend',
@@ -121,14 +121,18 @@ const MODES = {
     },
     ideas: {
         icon: '💡', label: '전개',
-        placeholder: '원하는 방향이 있으면 적어줘',
-        defaultShown: '다음 전개 어떻게 하면 좋을까?',
-        defaultAsk: 'Where could the story go next? Give me ideas.',
-        prompt: `Suggest where the story could go next.
-- Offer 3 to 4 clearly different directions (for example: escalate a conflict, an emotional beat, a complication or twist, a quiet character moment).
-- For each: a one-line hook, which existing thread or unresolved setup it grows from (cite message numbers or summary events), and what the user's persona could do or say next to steer there.
-- Respect established characterization and canon.
-- Offer directions only. Do not write the actual next story turn unless the user asks for a draft.`,
+        placeholder: '원하는 분위기나 방향이 있으면 적어줘',
+        defaultShown: '앞으로 이야기 큰 흐름을 어떻게 가져가면 좋을까?',
+        defaultAsk: 'Where could this story head in the long run? Suggest some big-picture directions.',
+        prompt: `Suggest big-picture directions for where this story could head over the coming arc. Think like a story planner sketching the overall shape, not like someone writing the next line.
+- Offer 3 to 4 clearly different overall directions. Make them differ in what kind of story it becomes (for example: the relationship deepening slowly, an outside conflict or threat taking over, a hidden truth coming out and changing everything, a fracture between the characters and its repair), not just in small events.
+- For each direction:
+  - a short name and a one-line premise of where the story ends up,
+  - the rough arc in 3 to 4 broad beats, from the current situation toward that end,
+  - which existing threads, unresolved setups or character traits it builds on (cite message numbers or summary events),
+  - what this direction would bring out in the characters and their relationship, and the tone it gives the story.
+- Stay at the level of arcs and turning points. Do NOT suggest the user's next reply, specific lines of dialogue, or what the user's persona should say or do next.
+- Respect established characterization and canon. If the user names a mood or direction, shape every option around it.`,
     },
     swipes: {
         icon: '🔀', label: '스와이프 비교',
@@ -1691,7 +1695,7 @@ function init() {
     applyBookmarkMarks();
     // The chat column settles a moment after load; place the button once it has
     setTimeout(clampFab, 1500);
-    console.log(`[${MODULE}] loaded v1.9.1`);
+    console.log(`[${MODULE}] loaded v1.9.2`);
 }
 
 (function bootstrap() {
