@@ -7,6 +7,8 @@ const QUOTE_MAX_CHARS = 4000;
 
 const defaultSettings = Object.freeze({
     profileId: '',
+    fastProfileId: '',       // optional second profile for quick back-and-forth modes
+    fastModes: ['fan'],      // mode keys that use the fast profile
     maxTokens: 8192,         // thinking models spend part of this on reasoning before they write
     rangeMode: 'same',       // 'same' (what the character sees) | 'count' | 'tokens' | 'all' (hidden ones too) | 'card' (card + persona only)
     rangeCount: 50,
@@ -601,11 +603,18 @@ function buildSystemParts(storyContext, mode, bookmark = null) {
  * a connection profile that talks to OpenRouter with a Claude or Gemini model.
  * Other providers either cache matching prefixes on their own or ignore caching entirely.
  */
-function canMarkCache() {
+/** Which connection profile a mode uses: the fast one if it is set and the mode is ticked, else the main one. */
+function profileForMode(mode) {
     const s = getSettings();
-    if (!s.useCache || !s.profileId) return false;
+    if (s.fastProfileId && (s.fastModes ?? []).includes(mode)) return s.fastProfileId;
+    return s.profileId || '';
+}
+
+function canMarkCache(profileId) {
+    const s = getSettings();
+    if (!s.useCache || !profileId) return false;
     const profiles = ctx().extensionSettings?.connectionManager?.profiles ?? [];
-    const profile = profiles.find(p => p.id === s.profileId);
+    const profile = profiles.find(p => p.id === profileId);
     if (!profile || profile.api !== 'openrouter') return false;
     return /claude|anthropic|gemini/i.test(String(profile.model ?? ''));
 }
@@ -648,14 +657,14 @@ function buildTurns(log, mode) {
 // Generation
 // ---------------------------------------------------------------------------
 
-async function requestCompletion(messages) {
+async function requestCompletion(messages, profileId) {
     const c = ctx();
     const s = getSettings();
-    if (s.profileId) {
+    if (profileId) {
         state.usingMainApi = false;
         state.abort = new AbortController();
         const res = await c.ConnectionManagerRequestService.sendRequest(
-            s.profileId, messages, Number(s.maxTokens) || 8192,
+            profileId, messages, Number(s.maxTokens) || 8192,
             { stream: false, signal: state.abort.signal, extractData: true, includePreset: true, includeInstruct: true },
         );
         return typeof res === 'string' ? res : String(res?.content ?? '');
@@ -693,7 +702,8 @@ async function runGeneration() {
         }
         const parts = buildSystemParts(story.text, mode, story.stats.bookmark ?? null);
         const system = `${parts.stable}\n\n${parts.dynamic}`;
-        const systemContent = canMarkCache()
+        const profileId = profileForMode(mode);
+        const systemContent = canMarkCache(profileId)
             ? [
                 { type: 'text', text: parts.stable, cache_control: { type: 'ephemeral' } },
                 { type: 'text', text: parts.dynamic },
@@ -702,7 +712,7 @@ async function runGeneration() {
         const messages = [{ role: 'system', content: systemContent }, ...buildTurns(log, mode)];
         showStats(story.stats, system);
 
-        const reply = (await requestCompletion(messages) ?? '').trim();
+        const reply = (await requestCompletion(messages, profileId) ?? '').trim();
         if (runId !== state.runId) return; // stopped by the user
         if (ctx().getCurrentChatId() !== chatId) {
             toastr.warning('답변이 오기 전에 채팅이 바뀌어서 버렸어.', '소곤이');
@@ -1299,7 +1309,33 @@ function toggleSettings(show) {
     if (!open) renderLog();
 }
 
+/** Checkboxes choosing which modes answer with the fast profile. */
+function renderFastModes() {
+    const s = getSettings();
+    const box = document.getElementById('sk-set-fastmodes');
+    if (!box) return;
+    box.replaceChildren();
+    if (!s.fastProfileId) return;
+    const keys = [...Object.keys(MODES), ...(s.customModes ?? []).map(m => `c_${m.id}`)];
+    for (const key of keys) {
+        const m = getMode(key);
+        if (!m) continue;
+        const label = el('label', 'checkbox_label');
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.checked = s.fastModes.includes(key);
+        check.addEventListener('change', () => {
+            s.fastModes = s.fastModes.filter(k => k !== key);
+            if (check.checked) s.fastModes.push(key);
+            saveSettings();
+        });
+        label.append(check, el('span', '', `${m.icon} ${m.label}`));
+        box.append(label);
+    }
+}
+
 function renderChipSettings() {
+    renderFastModes();
     const s = getSettings();
     const chipBox = document.getElementById('sk-set-chips');
     const customBox = document.getElementById('sk-set-custom');
@@ -1374,6 +1410,9 @@ function createSettingsUI() {
         <h4>모델</h4>
         <label for="sk-set-profile">연결 프로필 (비우면 현재 메인 API 사용)</label>
         <select id="sk-set-profile" class="text_pole"></select>
+        <label for="sk-set-fastprofile">빠른 모델 프로필 (선택. 아래에서 고른 모드만 이걸로 답해)</label>
+        <select id="sk-set-fastprofile" class="text_pole"></select>
+        <div id="sk-set-fastmodes"></div>
         <label for="sk-set-maxtokens">최대 응답 토큰 (생각하는 모델은 추론 토큰도 여기서 나가)</label>
         <input id="sk-set-maxtokens" class="text_pole" type="number" min="200" max="32000" step="100" />
 
@@ -1516,11 +1555,22 @@ function createSettingsUI() {
         );
         const first = select.querySelector('option[value=""]');
         if (first) { first.textContent = '(현재 메인 API 사용)'; delete first.dataset.i18n; }
+        ctx().ConnectionManagerRequestService.handleDropdown(
+            '#sk-set-fastprofile',
+            s.fastProfileId,
+            (profile) => { s.fastProfileId = profile?.id ?? ''; saveSettings(); renderFastModes(); },
+        );
+        const fastFirst = document.querySelector('#sk-set-fastprofile option[value=""]');
+        if (fastFirst) { fastFirst.textContent = '(안 씀: 전부 위 프로필로)'; delete fastFirst.dataset.i18n; }
     } catch (e) {
         console.warn(`[${MODULE}] connection profiles unavailable`, e);
         select.innerHTML = '<option value="">(연결 프로필 확장이 꺼져 있음: 메인 API 사용)</option>';
         select.disabled = true;
+        const fast = document.getElementById('sk-set-fastprofile');
+        fast.innerHTML = '<option value="">(연결 프로필 확장이 꺼져 있음)</option>';
+        fast.disabled = true;
     }
+    renderFastModes();
 }
 
 // ---------------------------------------------------------------------------
@@ -1568,7 +1618,7 @@ function init() {
     applyBookmarkMarks();
     // The chat column settles a moment after load; place the button once it has
     setTimeout(clampFab, 1500);
-    console.log(`[${MODULE}] loaded v1.7.2`);
+    console.log(`[${MODULE}] loaded v1.8.0`);
 }
 
 (function bootstrap() {

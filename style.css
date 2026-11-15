@@ -663,3 +663,13 @@ img.sk-mascot {
 .sk-error .sk-body {
     white-space: pre-wrap;
 }
+
+#sk-set-fastmodes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+}
+
+#sk-set-fastmodes label {
+    margin-top: 2px;
+}
