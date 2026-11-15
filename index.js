@@ -1373,6 +1373,96 @@ function toggleSettings(show) {
     if (!open) renderLog();
 }
 
+// ---------------------------------------------------------------------------
+// Backup: export / import the side chat of the current chat only
+// ---------------------------------------------------------------------------
+
+function downloadText(filename, text, type) {
+    const url = URL.createObjectURL(new Blob([text], { type }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+function backupFileName(ext) {
+    const name = String(ctx().name2 || 'chat').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 40);
+    const d = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    return `sogoni_${name}_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}.${ext}`;
+}
+
+function exportBackup(kind) {
+    if (!hasChat()) { toastr.info('먼저 채팅을 열어줘.', '소곤이'); return; }
+    const log = getLog().filter(item => !item.error);
+    if (!log.length) { toastr.info('이 챗엔 저장할 소곤이 대화가 없어.', '소곤이'); return; }
+    if (kind === 'json') {
+        const data = { app: 'sogoni', version: 1, exportedAt: new Date().toISOString(), character: ctx().name2 ?? '', log };
+        downloadText(backupFileName('json'), JSON.stringify(data, null, 2), 'application/json');
+    } else {
+        const lines = log.map((item) => {
+            const who = item.role === 'user' ? '나' : '소곤이';
+            const m = item.role === 'user' && item.mode && item.mode !== 'free' ? getMode(item.mode) : null;
+            const head = `[${who}${m ? ` · ${m.label}` : ''}${item.pinned ? ' · 핀' : ''}]`;
+            const quote = item.quote?.text ? `> ${item.quote.mesid ?? ''} ${item.quote.text}`.replace(/\n/g, '\n> ') + '\n' : '';
+            return `${head}\n${quote}${item.content}`;
+        });
+        downloadText(backupFileName('txt'), lines.join('\n\n----------\n\n') + '\n', 'text/plain');
+    }
+    toastr.success('저장했어.', '소곤이');
+}
+
+/** Keep only the fields Sogoni itself writes, so a hand-edited or foreign file cannot inject anything odd. */
+function cleanImportedItem(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    if (raw.role !== 'user' && raw.role !== 'assistant') return null;
+    if (typeof raw.content !== 'string' || !raw.content.trim()) return null;
+    const item = { role: raw.role, content: raw.content, ts: Number(raw.ts) || Date.now() };
+    if (typeof raw.mode === 'string') item.mode = raw.mode;
+    if (typeof raw.sent === 'string') item.sent = raw.sent;
+    if (raw.pinned === true) item.pinned = true;
+    if (raw.hidden === true) item.hidden = true;
+    if (raw.quote && typeof raw.quote.text === 'string') {
+        item.quote = { text: raw.quote.text.slice(0, QUOTE_MAX_CHARS), partial: !!raw.quote.partial };
+        if (Number.isInteger(raw.quote.mesid)) item.quote.mesid = raw.quote.mesid;
+    }
+    return item;
+}
+
+async function importBackup(file) {
+    if (!file) return;
+    if (!hasChat()) { toastr.info('먼저 채팅을 열어줘.', '소곤이'); return; }
+    if (state.busy) { toastr.info('소곤이가 답하는 중이야. 끝나고 다시 해줘.', '소곤이'); return; }
+    try {
+        const data = JSON.parse(await file.text());
+        const source = Array.isArray(data) ? data : data?.log;
+        if (!Array.isArray(source)) throw new Error('소곤이 백업 파일이 아니야.');
+        const items = source.map(cleanImportedItem).filter(Boolean);
+        if (!items.length) throw new Error('불러올 대화가 없어.');
+        getLog().push(...items);
+        saveLog();
+        toggleSettings(false);
+        toastr.success(`말풍선 ${items.length}개를 불러왔어.`, '소곤이');
+    } catch (e) {
+        console.error(`[${MODULE}] import failed`, e);
+        toastr.error(`불러오기 실패: ${e?.message ?? e}`, '소곤이');
+    }
+}
+
+function bindBackupButtons() {
+    const file = document.getElementById('sk-backup-file');
+    document.getElementById('sk-backup-json').addEventListener('click', () => exportBackup('json'));
+    document.getElementById('sk-backup-txt').addEventListener('click', () => exportBackup('txt'));
+    document.getElementById('sk-backup-load').addEventListener('click', () => file.click());
+    file.addEventListener('change', async () => {
+        await importBackup(file.files?.[0]);
+        file.value = '';
+    });
+}
+
 /** Checkboxes choosing which modes answer with the fast profile. */
 function renderFastModes() {
     const s = getSettings();
@@ -1546,6 +1636,15 @@ function createSettingsUI() {
         <small>둘 다 꺼도 요술봉 메뉴의 "소곤이"로 열 수 있어.</small>
         <label for="sk-set-width">PC 패널 너비 (px)</label>
         <input id="sk-set-width" class="text_pole" type="number" min="300" max="900" step="10" />
+
+        <h4>백업 (지금 열린 챗의 소곤이 대화만)</h4>
+        <div class="sk-backup-row">
+            <button type="button" id="sk-backup-json" class="menu_button">백업 파일 저장</button>
+            <button type="button" id="sk-backup-txt" class="menu_button">읽기용 텍스트 저장</button>
+            <button type="button" id="sk-backup-load" class="menu_button">백업 불러오기</button>
+        </div>
+        <input id="sk-backup-file" type="file" accept=".json,application/json" hidden />
+        <small>백업 파일(.json)은 다시 불러올 수 있고, 텍스트(.txt)는 읽기 전용이야. 불러오면 지금 대화 뒤에 덧붙여져.</small>
     </div>`;
     panel.querySelector('.sk-head').insertAdjacentHTML('afterend', html);
     document.getElementById('sk-settings-back').addEventListener('click', () => toggleSettings(false));
@@ -1581,6 +1680,7 @@ function createSettingsUI() {
     bindCheck('sk-set-fab', 'showFab', applyFabVisibility);
     bindCheck('sk-set-inputicon', 'showInputIcon', applyInputIconVisibility);
 
+    bindBackupButtons();
     renderChipSettings();
     const rx = document.getElementById('sk-set-rx');
     rx.value = s.rxCriteria ?? '';
@@ -1695,7 +1795,7 @@ function init() {
     applyBookmarkMarks();
     // The chat column settles a moment after load; place the button once it has
     setTimeout(clampFab, 1500);
-    console.log(`[${MODULE}] loaded v1.9.2`);
+    console.log(`[${MODULE}] loaded v1.10.0`);
 }
 
 (function bootstrap() {

@@ -686,3 +686,15 @@ img.sk-mascot {
     width: auto;
     margin: 0;
 }
+
+.sk-backup-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.sk-backup-row .menu_button {
+    width: auto;
+    margin: 0;
+    flex: 1 1 auto;
+}
